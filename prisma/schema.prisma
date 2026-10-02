@@ -1,0 +1,228 @@
+// Prisma schema for the Maximize-inspired storefront.
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  products  Product[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String
+  // Price stored in the smallest currency unit (cents) to avoid float rounding.
+  priceCents  Int
+  // Optional original / "compare at" price for showing a strikethrough discount.
+  compareAtCents Int?
+  currency    String   @default("usd")
+  image       String
+  images      String   @default("[]") // JSON array of extra image URLs
+  rating      Float    @default(4.5)
+  reviews     Int      @default(0)
+  stock       Int      @default(100)
+  featured    Boolean  @default(false)
+  badge       String?  // e.g. "New", "Sale", "Best Seller"
+  category    Category @relation(fields: [categoryId], references: [id])
+  categoryId  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  orderItems  OrderItem[]
+  wishlistItems WishlistItem[]
+
+  @@index([categoryId])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  email           String
+  amountTotal     Int         // cents
+  currency        String      @default("usd")
+  status          String      @default("pending") // pending | paid | failed | refunded
+  // How the customer pays: "prepaid" = manual bank/CashPlus transfer confirmed
+  // by the admin; "card" = YouCan Pay; "cod" = cash on delivery.
+  paymentMethod   String      @default("card")
+  // Reference the customer enters after sending a manual transfer (CashPlus id,
+  // bank transfer ref, sender name, etc.).
+  paymentRef      String?
+  // Uploaded screenshot / receipt (reçu) of the transfer, as proof of payment.
+  receiptUrl      String?
+  stripeSessionId String?     @unique
+  youcanTokenId       String? @unique
+  youcanTransactionId String? @unique
+  // Refund bookkeeping. The actual money-back is issued in the payment
+  // provider's dashboard; these fields keep our records in sync.
+  refundedCents   Int         @default(0)
+  refundReason    String?
+  refundedAt      DateTime?
+  // Customer cancellation + money-back process (shown to the customer, advanced
+  // by the admin): none | requested | reviewing | processing | sent | rejected.
+  cancelReason    String?
+  refundRib       String?
+  refundStatus    String      @default("none")
+  refundStatusAt  DateTime?
+  refundNote      String?
+  // Shipping address snapshot (taken at checkout so it can't change later).
+  shipName        String?
+  shipPhone       String?
+  shipLine1       String?
+  shipCity        String?
+  shipRegion      String?
+  // Dropship fulfillment tracking. The admin orders from the supplier manually
+  // after payment, then records the supplier order + tracking here.
+  supplier          String?  // aliexpress | temu | other
+  supplierOrderId   String?
+  supplierCostCents Int       @default(0)
+  fulfillmentStatus String    @default("awaiting") // awaiting | ordered | shipped | delivered
+  trackingNumber    String?
+  carrier           String?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  fulfillmentNotes  String?
+  // Free-text "where is the parcel now", typed by the admin (shown to the
+  // customer on their order tracking page).
+  currentLocation   String?
+  locationUpdatedAt DateTime?
+  items           OrderItem[]
+  events          PaymentEvent[]
+  user            User?       @relation(fields: [userId], references: [id])
+  userId          String?
+  couponCode      String?
+  discountCents   Int         @default(0)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @default(now()) @updatedAt
+
+  @@index([userId])
+}
+
+// Append-only audit trail of a payment's journey, one row per step:
+// created -> tokenized -> confirm_paid -> webhook_paid (or failed / refunded).
+model PaymentEvent {
+  id         String   @id @default(cuid())
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId    String
+  type       String   // created | tokenized | confirm_paid | webhook_paid | failed | refunded
+  message    String?
+  provider   String?  // youcanpay | stripe
+  amountCents Int?
+  createdAt  DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  // Null for accounts created via Google (no local password).
+  passwordHash String?
+  googleId     String?   @unique
+  // Google OAuth tokens captured at login. Access tokens are short-lived; the
+  // refresh token (when granted via access_type=offline) can mint new ones.
+  googleAccessToken  String?
+  googleRefreshToken String?
+  googleTokenExpiry  DateTime?
+  image        String?
+  country      String?
+  // Default checkout method the customer prefers ("card" | "cod"). No card data stored.
+  preferredPayment String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  sessions     Session[]
+  orders       Order[]
+  wishlist     WishlistItem[]
+  addresses    Address[]
+  messages     SupportMessage[]
+}
+
+model WishlistItem {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
+model Address {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  fullName  String
+  phone     String
+  line1     String
+  city      String
+  region    String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([userId])
+}
+
+model SupportMessage {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  subject   String
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Coupon {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  description     String
+  // "percent" => value is % off; "fixed" => value is centimes off.
+  kind            String
+  value           Int
+  minSubtotalCents Int     @default(0)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model OrderItem {
+  id         String  @id @default(cuid())
+  order      Order   @relation(fields: [orderId], references: [id])
+  orderId    String
+  product    Product @relation(fields: [productId], references: [id])
+  productId  String
+  name       String
+  priceCents Int
+  quantity   Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@index([orderId])
+  @@index([productId])
+}
